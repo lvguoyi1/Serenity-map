@@ -1,3 +1,4 @@
+import { handleAiRequest } from './ai-agent.mjs'
 import { createServer } from 'node:http'
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -235,6 +236,11 @@ const server = createServer(async (request, response) => {
   }
 
   try {
+    if (url.pathname === '/api/ai/think' && request.method === 'POST') {
+      await handleAiRequest(request, response, readJsonBody)
+      return
+    }
+
     if (url.pathname === '/api/health' && request.method === 'GET') {
       sendJson(response, 200, { ok: true, storeDir })
       return
@@ -300,7 +306,7 @@ const server = createServer(async (request, response) => {
   }
 })
 
-server.listen(port, () => {
+server.listen(port, '127.0.0.1', () => {
   console.log(`Serenity store API listening on http://localhost:${port}`)
   console.log(`Canvas snapshots will be saved to ${canvasFile}`)
 })
