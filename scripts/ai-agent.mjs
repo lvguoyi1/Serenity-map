@@ -3,7 +3,7 @@ const SYSTEM = `你是 Serenity 知识画布协作 Agent。你将收到用户请
 只输出 JSON 对象，格式为 {"explanation":"简短解释推理依据","patch":{"version":1,"intent":"意图","operations":[...]}}。
 允许的操作：addNode(id,title,summary,body,tags,status,x,y,connectFromId,edgeKind,edgeLabel), updateNode(id,title,summary,body,tags,status), connectNodes(fromId,toId,kind,label), disconnectNodes(id 或 fromId/toId), moveNode(id,x,y), deleteNode(id)。
 关系 kind 仅允许 extends,contains,causes,contrasts,questions,supports,blocks,related；status 仅允许 seed,exploring,verified,question,archived。
-已有节点必须使用输入中的准确 id。新节点 id 使用 node-ai- 开头的唯一字符串。优先提出非破坏性增量修改，默认不删除已有节点。发现跨主题关联时说明推理依据，不要捏造事实。无必要操作时 operations 为空数组。不要输出 Markdown 代码围栏。`
+如输入包含 otherPages，可以参考其他页面内容，所有 Patch 操作只针对当前页 nodes 和 edges。关系只能在同一页内创建。已有节点必须使用输入中的准确 id。新节点 id 使用 node-ai- 开头的唯一字符串。优先提出非破坏性增量修改，默认不删除已有节点。发现跨主题关联时说明推理依据，不要捏造事实。无必要操作时 operations 为空数组。不要输出 Markdown 代码围栏。`
 
 function send(response, code, payload) {
   response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
@@ -13,37 +13,50 @@ function parseOutput(text) {
   const cleaned = text.trim().replace(/^\x60\x60\x60(?:json)?\s*/i, '').replace(/\s*\x60\x60\x60$/, '')
   return JSON.parse(cleaned)
 }
-export async function handleAiRequest(request, response, readJsonBody) {
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(request.url, 'http://localhost').hostname)) {
-    // The server should be bound to loopback; hostname here is not an auth mechanism.
+export const defaultAiConfig = {
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-4.1-mini',
+}
+
+function environmentConfig() {
+  return {
+    baseUrl: process.env.SERENITY_AI_BASE_URL || defaultAiConfig.baseUrl,
+    model: process.env.SERENITY_AI_MODEL || defaultAiConfig.model,
+    apiKey: process.env.SERENITY_AI_API_KEY,
   }
-  const key = process.env.SERENITY_AI_API_KEY
-  if (!key) return send(response, 503, { ok: false, error: '请先设置 SERENITY_AI_API_KEY。' })
+}
+
+export async function handleAiRequest(request, response, readJsonBody, getConfig = environmentConfig) {
+  const { apiKey: key, baseUrl, model } = await getConfig()
+  if (!key) return send(response, 503, { ok: false, error: '请先配置 AI API Key。' })
   let input
   try { input = await readJsonBody(request) } catch { return send(response, 400, { ok: false, error: '请求 JSON 无效。' }) }
   if (typeof input?.prompt !== 'string' || !input.prompt.trim() || !input.context || !Array.isArray(input.context.nodes) || !Array.isArray(input.context.edges)) {
     return send(response, 400, { ok: false, error: '需要 prompt 与完整画布 context。' })
   }
-  if (input.prompt.length > 8000 || input.context.nodes.length > 1000 || input.context.edges.length > 3000) {
+  const otherPages = input.context.otherPages ?? []
+  if (!Array.isArray(otherPages) || otherPages.some((page) => !Array.isArray(page?.nodes) || !Array.isArray(page?.edges))) {
+    return send(response, 400, { ok: false, error: '画布页面格式无效。' })
+  }
+  const nodeCount = otherPages.reduce((total, page) => total + page.nodes.length, input.context.nodes.length)
+  const edgeCount = otherPages.reduce((total, page) => total + page.edges.length, input.context.edges.length)
+  if (input.prompt.length > 8000 || nodeCount > 1000 || edgeCount > 3000) {
     return send(response, 413, { ok: false, error: '输入过大，请缩小画布范围。' })
   }
-  const base = (process.env.SERENITY_AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-  const model = process.env.SERENITY_AI_MODEL || 'gpt-4.1-mini'
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 60000)
   try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 60000)
-    let upstream
-    try {
-      upstream = await fetch(base + '/chat/completions', {
-        method: 'POST', signal: controller.signal,
-        headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model, temperature: 0.3,
-          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: JSON.stringify({ prompt: input.prompt, context: input.context }) }],
-          response_format: { type: 'json_object' },
-        }),
-      })
-    } finally { clearTimeout(timeout) }
+    const upstream = await fetch(baseUrl.replace(/\/+$/, '') + '/chat/completions', {
+      method: 'POST',
+      signal: controller.signal,
+      redirect: 'error',
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model, temperature: 0.3,
+        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: JSON.stringify({ prompt: input.prompt, context: input.context }) }],
+        response_format: { type: 'json_object' },
+      }),
+    })
     if (!upstream.ok) return send(response, 502, { ok: false, error: '模型服务请求失败（HTTP ' + upstream.status + '）。' })
     const data = await upstream.json()
     const output = parseOutput(data.choices?.[0]?.message?.content || '')
@@ -54,5 +67,7 @@ export async function handleAiRequest(request, response, readJsonBody) {
     return send(response, 200, { ok: true, explanation: String(output.explanation || ''), patch: output.patch })
   } catch (error) {
     return send(response, 502, { ok: false, error: error?.name === 'AbortError' ? '模型响应超时。' : '模型响应解析失败或网络异常。' })
+  } finally {
+    clearTimeout(timeout)
   }
 }

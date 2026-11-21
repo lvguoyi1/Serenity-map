@@ -53,7 +53,7 @@ Serenity Learning Canvas 是一个面向人机协作学习与研究的本地无�
 
 请确保本机已安装：
 
-- Node.js 20 或更高版本
+- Node.js 22.12 或更高版本（推荐 Node.js 24）
 - npm 10 或更高版本
 - Git
 
@@ -65,9 +65,9 @@ Serenity Learning Canvas 是一个面向人机协作学习与研究的本地无�
 ## 快速安装
 
 ```bash
-git clone https://github.com/Waldmeinsamkeit/Serenity-map
-cd serenity
-npm install
+git clone https://github.com/lvguoyi1/Serenity-map
+cd Serenity-map
+npm ci
 npm run dev
 ```
 
@@ -81,6 +81,23 @@ Windows 用户也可以在安装依赖后双击：
 ```text
 start-serenity.bat
 ```
+
+## Windows 桌面版
+
+在 Windows x64 上运行以下命令。桌面开发启动和安装包构建都使用仓库中的 React 画布和本地服务。
+
+```powershell
+npm ci
+npm run desktop
+npm run package:win
+```
+
+安装文件位于 `release/Serenity Map Setup 0.1.0.exe`。构建产物为未签名的 NSIS x64 安装包。安装后可从开始菜单启动，内置服务随应用启动。GitHub Actions 的 **Windows desktop** 工作流会构建安装包、静默安装并运行验证，通过后上传 `Serenity-Map-Windows-x64`。
+
+- 在右侧 **AI 思维协作 → AI API 设置** 填写 OpenAI-compatible Base URL、模型和 API Key，然后保存。Base URL 填到 `/v1` 一类的 API 根路径。
+- 模型会收到所有页面的结构化卡片和关系。待确认的增量 Patch 作用于发起分析的页面，确认后可用画布的撤销功能回退。
+- Windows 下，画布和历史记录保存在 `%APPDATA%\Serenity Map\store\`，AI API Key 由 Windows 加密后保存在同一应用目录的 `ai-settings.json`。
+- 网页开发模式继续使用 `npm run dev`，通过项目根目录的 `.env` 配置 AI，快照仍位于项目的 `store/`。需要沿用网页数据时，先退出桌面应用，再将现有的 `store/canvas-default.json` 复制到桌面数据目录。已有桌面快照时请先备份。
 
 ## 使用示例
 

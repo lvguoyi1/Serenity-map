@@ -486,6 +486,7 @@ export function applyAiPatch(editor: Editor, patch: AiPatch) {
   const validation = validatePatchForEditor(editor, patch)
   if (!validation.ok) return validation
 
+  if (patch.operations.length) editor.markHistoryStoppingPoint('Apply AI patch')
   editor.run(() => {
     for (const operation of patch.operations) {
       const index = buildCanvasIndex(editor)

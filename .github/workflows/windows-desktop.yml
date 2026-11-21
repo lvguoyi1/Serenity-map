@@ -1,0 +1,37 @@
+name: Windows desktop
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run package:win
+      - name: Install and test desktop app
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem release/*.exe | Select-Object -First 1
+          if (-not $setup) { throw "Windows installer is missing" }
+          $installDir = Join-Path $env:RUNNER_TEMP "serenity-installed"
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)" }
+          npm run test:desktop -- --electron (Join-Path $installDir "Serenity Map.exe")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Serenity-Map-Windows-x64
+          path: release/*.exe
+          if-no-files-found: error
