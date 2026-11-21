@@ -22,7 +22,7 @@ import {
   X,
 } from 'lucide-react'
 import { type Editor, type TLShapeId, Tldraw } from 'tldraw'
-import { exportObsidianMarkdown } from '../ai/context'
+import { exportAiContext, exportObsidianMarkdown } from '../ai/context'
 import { applyAiPatch, parsePatchText, summarizePatch, validatePatchForEditor, type ObsidianImportMode } from '../ai/patch'
 import {
   buildCanvasIndex,
@@ -184,6 +184,12 @@ export function CanvasShell() {
   const [isStylePanelOpen, setStylePanelOpen] = useState(false)
   const [syncStatus, setSyncStatus] = useState<SyncStatusState>(INITIAL_SYNC_STATUS)
   const [toast, setToast] = useState('')
+  const [aiPrompt, setAiPrompt] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiExplanation, setAiExplanation] = useState('')
+  const [aiSuggestedPatch, setAiSuggestedPatch] = useState<AiPatch | null>(null)
+  const [aiValidation, setAiValidation] = useState<PatchValidationResult | null>(null)
+  const [aiError, setAiError] = useState('')
 
   const refreshInspector = useCallback((nextEditor = editor) => {
     if (!nextEditor) return
@@ -551,6 +557,44 @@ export function CanvasShell() {
     }
   }
 
+  async function askAi() {
+    if (!editor || !aiPrompt.trim() || aiBusy) return
+    setAiBusy(true)
+    setAiError('')
+    setAiSuggestedPatch(null)
+    setAiValidation(null)
+    try {
+      syncLearningCardDataFromText(editor)
+      const response = await fetch('/api/ai/think', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: aiPrompt, context: exportAiContext(editor) }),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.ok) throw new Error(result.error || 'AI 请求失败')
+      const nextPatch = result.patch as AiPatch
+      const validation = validatePatchForEditor(editor, nextPatch)
+      setAiSuggestedPatch(nextPatch)
+      setAiValidation(validation)
+      setAiExplanation(String(result.explanation || ''))
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : 'AI 请求失败')
+    } finally {
+      setAiBusy(false)
+    }
+  }
+
+  function applyAiSuggestion() {
+    if (!editor || !aiSuggestedPatch) return
+    const result = applyAiPatch(editor, aiSuggestedPatch)
+    setAiValidation(result)
+    if (result.ok) {
+      setAiSuggestedPatch(null)
+      setAiExplanation('')
+      showToast('AI 修改已应用到当前画布')
+    }
+  }
+
   function saveInspector() {
     if (!editor || !inspector) return
     const selected = getSelectedLearningCards(editor)
@@ -862,6 +906,25 @@ export function CanvasShell() {
           </div>
         )}
 
+        <section className="inspector-section" style={{ padding: 14, borderTop: '1px solid #8884' }}>
+          <div className="section-heading"><Bot size={16} /><strong>AI 思维协作</strong></div>
+          <p style={{ fontSize: 12, opacity: 0.7 }}>AI 将读取当前画布全部结构化节点和连线。所有修改须经你确认。</p>
+          <textarea aria-label="AI 思维指令" rows={4} style={{ width: '100%', boxSizing: 'border-box' }}
+            value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)}
+            placeholder="例如：分析整张画布，找出三个跨主题关联并添加连线" />
+          <button type="button" className="primary-action" disabled={!editor || !aiPrompt.trim() || aiBusy}
+            onClick={() => void askAi()}>{aiBusy ? 'AI 正在分析…' : '分析画布并提出修改'}</button>
+          {aiError && <p role="alert" style={{ color: '#e46b6b', fontSize: 12 }}>{aiError}</p>}
+          {aiSuggestedPatch && <div style={{ marginTop: 12 }}>
+            <strong>待确认修改（{aiSuggestedPatch.operations.length} 项）</strong>
+            <p style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{aiExplanation}</p>
+            {summarizePatch(aiSuggestedPatch).map((line, index) => <p key={index} style={{ fontSize: 12 }}>{line}</p>)}
+            {aiValidation && !aiValidation.ok && <p role="alert">{aiValidation.errors.join('；')}</p>}
+            <button type="button" className="primary-action" disabled={!aiValidation?.ok || aiSuggestedPatch.operations.length === 0}
+              onClick={applyAiSuggestion}>确认并应用</button>
+            <button type="button" onClick={() => { setAiSuggestedPatch(null); setAiExplanation('') }}>拒绝建议</button>
+          </div>}
+        </section>
       </aside>
 
       {isContextOpen && (
