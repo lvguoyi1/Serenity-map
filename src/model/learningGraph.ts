@@ -370,8 +370,11 @@ function getInferredArrowEdgeData(editor: Editor, arrow: TLArrowShape): Learning
   }
 }
 
-export function buildCanvasIndex(editor: Editor): CanvasIndex {
-  const shapes = editor.getCurrentPageShapes()
+export function buildCanvasIndex(editor: Editor, pageId = editor.getCurrentPageId()): CanvasIndex {
+  const shapes = [...editor.getPageShapeIds(pageId)].flatMap((id) => {
+    const shape = editor.getShape(id)
+    return shape ? [shape] : []
+  })
   const cards = shapes.filter(isLearningCard)
   const arrows = shapes.filter((shape): shape is TLArrowShape => shape.type === 'arrow')
   const nodesById = new Map<string, LearningNodeForAi>()

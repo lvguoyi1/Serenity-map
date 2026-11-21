@@ -21,8 +21,10 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { type Editor, type TLShapeId, Tldraw } from 'tldraw'
-import { exportObsidianMarkdown } from '../ai/context'
+import { type Editor, type TLPageId, type TLShapeId, Tldraw } from 'tldraw'
+import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite.js'
+import { DesktopAiSettings, isDesktop } from './DesktopAiSettings'
+import { exportAiContext, exportAiReasoningContext, exportObsidianMarkdown } from '../ai/context'
 import { applyAiPatch, parsePatchText, summarizePatch, validatePatchForEditor, type ObsidianImportMode } from '../ai/patch'
 import {
   buildCanvasIndex,
@@ -47,6 +49,7 @@ import {
 import { SEARCH_SCOPES, buildCanvasSearchResults, type SearchScope } from './search'
 import { inspectSerenitySnapshot, isSaveableSerenitySnapshot } from './snapshotGuards'
 
+const assetUrls = getAssetUrlsByImport()
 const STORAGE_KEY = 'serenity:last-ai-context'
 
 interface InspectorState {
@@ -159,6 +162,8 @@ function isTextInputActive(editor?: Editor | null) {
 
 export function CanvasShell() {
   const [editor, setEditor] = useState<Editor | null>(null)
+  const aiPageRef = useRef<TLPageId | null>(null)
+  const hasUnsavedChanges = useRef(false)
   const saveTimerRef = useRef<number | null>(null)
   const canSaveSnapshotRef = useRef(false)
   const saveWarningShownRef = useRef(false)
@@ -184,6 +189,12 @@ export function CanvasShell() {
   const [isStylePanelOpen, setStylePanelOpen] = useState(false)
   const [syncStatus, setSyncStatus] = useState<SyncStatusState>(INITIAL_SYNC_STATUS)
   const [toast, setToast] = useState('')
+  const [aiPrompt, setAiPrompt] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiExplanation, setAiExplanation] = useState('')
+  const [aiSuggestedPatch, setAiSuggestedPatch] = useState<AiPatch | null>(null)
+  const [aiValidation, setAiValidation] = useState<PatchValidationResult | null>(null)
+  const [aiError, setAiError] = useState('')
 
   const refreshInspector = useCallback((nextEditor = editor) => {
     if (!nextEditor) return
@@ -207,6 +218,15 @@ export function CanvasShell() {
       nodeCount: index.nodesById.size,
       edgeCount: index.edgesById.size,
     })
+  }, [])
+
+  useEffect(() => {
+    if (!isDesktop()) return
+    const confirmClose = (event: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges.current || saveInFlightRef.current) event.preventDefault()
+    }
+    window.addEventListener('beforeunload', confirmClose)
+    return () => window.removeEventListener('beforeunload', confirmClose)
   }, [])
 
   const handleMount = useCallback((mountedEditor: Editor) => {
@@ -241,12 +261,14 @@ export function CanvasShell() {
         return
       }
       saveInFlightRef.current = true
+      hasUnsavedChanges.current = false
       updateSyncStatus(mountedEditor, 'saving', '正在写入本地快照')
       void saveLocalCanvasSnapshot(snapshot, storeUpdatedAtRef.current).then((result) => {
         storeUpdatedAtRef.current = result.updatedAt
         saveWarningShownRef.current = false
-        updateSyncStatus(mountedEditor, 'saved', '已保存，MCP 可读取当前页', result.updatedAt)
+        updateSyncStatus(mountedEditor, 'saved', '已写入本地快照', result.updatedAt)
       }).catch((error) => {
+        hasUnsavedChanges.current = true
         const message = error instanceof Error ? error.message : ''
         if (message.includes('changed on disk')) {
           updateSyncStatus(mountedEditor, 'conflict', '本地快照已被外部修改')
@@ -284,7 +306,7 @@ export function CanvasShell() {
               mountedEditor.loadSnapshot(stored.snapshot)
               syncLearningCardText(mountedEditor)
               refreshInspector(mountedEditor)
-              updateSyncStatus(mountedEditor, 'saved', '已加载本地快照，MCP 可读取', stored.updatedAt)
+              updateSyncStatus(mountedEditor, 'saved', '已加载本地快照', stored.updatedAt)
             } catch {
               updateSyncStatus(mountedEditor, 'error', '本地快照无法加载')
               showToast('本地画布快照无法加载，已重新初始化')
@@ -318,6 +340,7 @@ export function CanvasShell() {
         refreshInspector(mountedEditor)
       }
       if (!canSaveSnapshotRef.current) return
+      hasUnsavedChanges.current = true
       updateSyncStatus(
         mountedEditor,
         'dirty',
@@ -551,6 +574,51 @@ export function CanvasShell() {
     }
   }
 
+  async function askAi() {
+    if (!editor || !aiPrompt.trim() || aiBusy) return
+    setAiBusy(true)
+    setAiError('')
+    setAiSuggestedPatch(null)
+    setAiValidation(null)
+    try {
+      syncLearningCardDataFromText(editor)
+      const context = exportAiReasoningContext(editor)
+      const response = await fetch('/api/ai/think', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: aiPrompt, context }),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.ok) throw new Error(result.error || 'AI 请求失败')
+      if (editor.getCurrentPageId() !== context.pageId) throw new Error('页面已切换，请在当前页重新分析。')
+      aiPageRef.current = context.pageId
+      const nextPatch = result.patch as AiPatch
+      const validation = validatePatchForEditor(editor, nextPatch)
+      setAiSuggestedPatch(nextPatch)
+      setAiValidation(validation)
+      setAiExplanation(String(result.explanation || ''))
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : 'AI 请求失败')
+    } finally {
+      setAiBusy(false)
+    }
+  }
+
+  function applyAiSuggestion() {
+    if (!editor || !aiSuggestedPatch) return
+    if (editor.getCurrentPageId() !== aiPageRef.current) {
+      setAiError('请切回发起分析的页面，或在当前页重新分析。')
+      return
+    }
+    const result = applyAiPatch(editor, aiSuggestedPatch)
+    setAiValidation(result)
+    if (result.ok) {
+      setAiSuggestedPatch(null)
+      setAiExplanation('')
+      showToast('AI 修改已应用到当前画布')
+    }
+  }
+
   function saveInspector() {
     if (!editor || !inspector) return
     const selected = getSelectedLearningCards(editor)
@@ -578,11 +646,12 @@ export function CanvasShell() {
     { value: 'question', label: 'Question' },
     { value: 'archived', label: 'Archive' },
   ]
-  const mcpLabel = syncStatus.status === 'saved'
-    ? 'MCP 已同步'
+  const desktop = isDesktop()
+  const persistenceLabel = syncStatus.status === 'saved'
+    ? (desktop ? '已保存' : 'MCP 已同步')
     : syncStatus.status === 'saving'
-      ? 'MCP 同步中'
-      : 'MCP 待同步'
+      ? (desktop ? '保存中' : 'MCP 同步中')
+      : (desktop ? '待保存' : 'MCP 待同步')
   const syncButtonDisabled =
     !editor || syncStatus.status === 'saving' || syncStatus.status === 'loading'
   const syncStatusTitle = `${syncStatus.message} · ${syncStatus.pageName ?? '当前页'} · ${syncStatus.nodeCount} 节点 / ${syncStatus.edgeCount} 连线 · ${formatSyncTime(syncStatus.updatedAt)}`
@@ -604,7 +673,7 @@ export function CanvasShell() {
   return (
     <div className={isStylePanelOpen ? 'app-shell style-panel-open' : 'app-shell'}>
       <div className="canvas-frame">
-        <Tldraw onMount={handleMount} />
+        <Tldraw onMount={handleMount} assetUrls={assetUrls} />
       </div>
 
       <aside className="tool-rail" aria-label="Canvas tools">
@@ -745,7 +814,7 @@ export function CanvasShell() {
                 )}
               </span>
               <div>
-                <strong>{mcpLabel}</strong>
+                <strong>{persistenceLabel}</strong>
                 <span>{formatSyncTime(syncStatus.updatedAt)}</span>
               </div>
             </div>
@@ -762,7 +831,7 @@ export function CanvasShell() {
           </div>
         </div>
 
-        <div className="sync-status-meta" aria-label="MCP 同步详情">
+        <div className="sync-status-meta" aria-label={desktop ? '本地保存详情' : 'MCP 同步详情'}>
           <Database size={13} />
           <span>
             {syncStatus.message} · {syncStatus.pageName ?? '当前页'} · {syncStatus.nodeCount} 节点 / {syncStatus.edgeCount} 连线
@@ -862,6 +931,26 @@ export function CanvasShell() {
           </div>
         )}
 
+        <section className="inspector-section" style={{ padding: 14, borderTop: '1px solid #8884' }}>
+          <div className="section-heading"><Bot size={16} /><strong>AI 思维协作</strong></div>
+          <p style={{ fontSize: 12, opacity: 0.7 }}>AI 会将所有页面的结构化节点和连线发送给已配置的模型。建议只修改当前页，经你确认后应用。</p>
+          {desktop && <DesktopAiSettings />}
+          <textarea aria-label="AI 思维指令" rows={4} style={{ width: '100%', boxSizing: 'border-box' }}
+            value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)}
+            placeholder="例如：分析整张画布，找出三个跨主题关联并添加连线" />
+          <button type="button" className="primary-action" disabled={!editor || !aiPrompt.trim() || aiBusy}
+            onClick={() => void askAi()}>{aiBusy ? 'AI 正在分析…' : '分析画布并提出修改'}</button>
+          {aiError && <p role="alert" style={{ color: '#e46b6b', fontSize: 12 }}>{aiError}</p>}
+          {aiSuggestedPatch && <div style={{ marginTop: 12 }}>
+            <strong>待确认修改（{aiSuggestedPatch.operations.length} 项）</strong>
+            <p style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{aiExplanation}</p>
+            {summarizePatch(aiSuggestedPatch).map((line, index) => <p key={index} style={{ fontSize: 12 }}>{line}</p>)}
+            {aiValidation && !aiValidation.ok && <p role="alert">{aiValidation.errors.join('；')}</p>}
+            <button type="button" className="primary-action" disabled={!aiValidation?.ok || aiSuggestedPatch.operations.length === 0}
+              onClick={applyAiSuggestion}>确认并应用</button>
+            <button type="button" onClick={() => { setAiSuggestedPatch(null); setAiExplanation('') }}>拒绝建议</button>
+          </div>}
+        </section>
       </aside>
 
       {isContextOpen && (

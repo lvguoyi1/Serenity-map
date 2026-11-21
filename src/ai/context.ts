@@ -91,6 +91,25 @@ export function exportAiContext(editor: Editor): AiCanvasContext {
   }
 }
 
+export function exportAiReasoningContext(editor: Editor) {
+  const activePage = editor.getCurrentPage()
+  const otherPages = editor.getPages().filter((page) => page.id !== activePage.id).map((page) => {
+    const index = buildCanvasIndex(editor, page.id)
+    return {
+      pageId: page.id,
+      pageName: page.name,
+      nodes: [...index.nodesById.values()],
+      edges: [...index.edgesById.values()],
+    }
+  })
+  return {
+    ...exportAiContext(editor),
+    pageId: activePage.id,
+    pageName: activePage.name,
+    otherPages,
+  }
+}
+
 export function exportReadableContext(editor: Editor) {
   const context = exportAiContext(editor)
   const selected = context.selectedNodeIds.length
