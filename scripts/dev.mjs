@@ -24,6 +24,7 @@ loadDotEnv()
 
 const viteBin = join('node_modules', 'vite', 'bin', 'vite.js')
 const defaultStorePort = Number(process.env.SERENITY_STORE_PORT ?? 8787)
+const viteHost = process.env.SERENITY_VITE_HOST ?? '127.0.0.1'
 const defaultVitePort = Number(process.env.SERENITY_VITE_PORT ?? 5173)
 
 function isPortAvailable(port) {
@@ -65,15 +66,15 @@ const children = [
     env: childEnv,
     stdio: 'inherit',
   }),
-  spawn(process.execPath, [viteBin, '--host', '0.0.0.0', '--port', String(vitePort), '--strictPort'], {
+  spawn(process.execPath, [viteBin, '--host', viteHost, '--port', String(vitePort), '--strictPort'], {
     env: childEnv,
     stdio: 'inherit',
   }),
 ]
 
 console.log(`Serenity dev server starting...`)
-console.log(`Frontend: http://localhost:${vitePort}/`)
-console.log(`Store API: http://localhost:${storePort}/`)
+console.log(`Frontend: http://127.0.0.1:${vitePort}/`)
+console.log(`Store API: http://127.0.0.1:${storePort}/`)
 
 function shutdown(signal) {
   for (const child of children) child.kill(signal)

@@ -73,8 +73,8 @@ npm run dev
 
 启动后默认访问：
 
-- 前端应用：`http://localhost:5173/`
-- 本地存储 API：`http://localhost:8787/`
+- 前端应用：`http://127.0.0.1:5173/`
+- 本地存储 API：`http://127.0.0.1:8787/`
 
 Windows 用户也可以在安装依赖后双击：
 
@@ -107,7 +107,7 @@ npm run package:win
 npm run dev
 ```
 
-该命令会同时启动 Vite 前端服务和本地存储 API。
+该命令会同时启动 Vite 前端服务和本地存储 API。前端默认监听 127.0.0.1，可通过 `SERENITY_VITE_HOST` 指定其他监听地址。
 
 ### 单独启动前端
 
@@ -301,8 +301,8 @@ npm run dev
 
 Default URLs:
 
-- Frontend app: `http://localhost:5173/`
-- Local storage API: `http://localhost:8787/`
+- Frontend app: `http://127.0.0.1:5173/`
+- Local storage API: `http://127.0.0.1:8787/`
 
 On Windows, after installing dependencies, you can also double-click:
 
